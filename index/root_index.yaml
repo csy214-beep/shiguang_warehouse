@@ -227,3 +227,8 @@ schools:
     name: "仲恺农业工程学院"
     initial: "Z"
     resource_folder: "ZHKU"
+
+  - id: "GXDLXY"
+    name: "广西电力职业技术学院"
+    initial: "G"
+    resource_folder: "GXDLXY"
