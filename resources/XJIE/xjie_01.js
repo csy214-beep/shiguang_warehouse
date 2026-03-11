@@ -156,7 +156,7 @@ async function getSelectedSemesterId() {
     const currentYear = new Date().getFullYear();
     // 绑定验证函数 validateYearInput
     const year = await window.AndroidBridgePromise.showPrompt(
-        "选择学年", "请输入学年（如2025）:", String(currentYear), "validateYearInput"
+        "选择学年", "请输入要导入课程的起始学年（例如 2025-2026 应输入2025）:", String(currentYear), "validateYearInput"
     );
     if (!year) return null;
     

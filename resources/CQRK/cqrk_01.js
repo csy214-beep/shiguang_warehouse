@@ -193,7 +193,7 @@ async function runImportFlow() {
 
         // 1. 获取学年
         const currentYear = new Date().getFullYear();
-        const year = await window.AndroidBridgePromise.showPrompt("选择学年", "请输入起始学年:", String(currentYear), "validateYearInput");
+        const year = await window.AndroidBridgePromise.showPrompt("选择学年", "请输入要导入课程的起始学年（例如 2025-2026 应输入2025）:", String(currentYear), "validateYearInput");
         if (!year) return;
 
         // 2. 获取学期并记录索引
