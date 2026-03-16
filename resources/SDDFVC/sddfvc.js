@@ -5,7 +5,7 @@
 // 数据解析函数
 
 /**
- * 将周次字符串结合单双周标识解析为数字数组
+ * 将周次字符串结合单双周标识解析为数字数组    注：现在没有用了 因为无法获取整个学期的表了
  * @param {string} zcString "7-15,17-20"
  * @param {number} dsz 0: 全周, 1: 单周, 2: 双周, -1: 全周
  */
@@ -190,16 +190,9 @@ async function runImportFlow() {
             return;
         }
 
-        AndroidBridge.showToast("尝试获取学期总表...");
-        const kcbRes = await fetch(`http://jwxt.sddfvc.edu.cn/mobile/student/mobile_kcb?api_token=${apiToken}&xq=${semesterId}`);
-        const kcbJson = await kcbRes.json();
-
-        let finalCourses = parseCoursesToModel(kcbJson.data);
-
-        if (finalCourses.length === 0) {
-            AndroidBridge.showToast("总表无数据，启动周遍历模式...");
-            finalCourses = await fetchFullSemesterData(apiToken, semesterId);
-        }
+        // 直接进入周遍历模式
+        AndroidBridge.showToast("开始抓取周课表数据...");
+        const finalCourses = await fetchFullSemesterData(apiToken, semesterId);
 
         if (finalCourses.length === 0) {
             AndroidBridge.showToast("未发现任何课程数据");
