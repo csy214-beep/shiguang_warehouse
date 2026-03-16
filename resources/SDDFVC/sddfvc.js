@@ -177,12 +177,13 @@ async function fetchFullSemesterData(apiToken, semesterId) {
 
 async function runImportFlow() {
     try {
-        const tokenMatch = document.cookie.match(/api_token=([^;]+)/);
-        if (!tokenMatch) {
-            AndroidBridge.showToast("未检测到登录状态，请先登录");
+        const urlParams = new URLSearchParams(window.location.search);
+        const apiToken = urlParams.get('api_token');
+        if (!apiToken) {
+            console.error("当前 URL 中未找到 api_token 参数:", window.location.href);
+            AndroidBridge.showToast("未检测到登录 Token，请确保在课表页面运行");
             return;
         }
-        const apiToken = tokenMatch[1];
         const semesterId = await getSelectedSemesterId(apiToken);
         if (!semesterId) {
             AndroidBridge.showToast("导入已取消");
