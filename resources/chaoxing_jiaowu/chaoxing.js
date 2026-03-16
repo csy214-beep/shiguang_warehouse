@@ -36,27 +36,6 @@ function parseWeeks(weekStr) {
 }
 
 /**
- * 从节次时间数据生成时间段列表。
- * @param {Array} jcsjszList - 节次时间数组，来自 getZclistByXnxq 接口
- * @returns {Array<Object>} - 时间段列表
- */
-function generateTimeSlots(jcsjszList) {
-    if (!jcsjszList || !Array.isArray(jcsjszList)) {
-        console.warn("JS: 节次时间数据为空或格式错误。");
-        return [];
-    }
-
-    const timeSlots = jcsjszList.map(item => ({
-        number: Number(item.jc),
-        startTime: item.kssj,
-        endTime: item.jssj
-    })).sort((a, b) => a.number - b.number);
-
-    console.log(`JS: 生成了 ${timeSlots.length} 个时间段。`);
-    return timeSlots;
-}
-
-/**
  * 从周次列表中获取开学日期（第1周的开始日期）。
  * @param {Array} zclist - 周次列表，来自 getZclistByXnxq 接口
  * @returns {string|null} - 开学日期，格式 YYYY-MM-DD
@@ -221,12 +200,56 @@ function getSemesterOptions() {
 }
 
 /**
+ * 从学年学期下拉框 HTML 中解析选项。
+ * @param {string} selectHtml - id=xnxq1 的 select 元素 HTML
+ * @returns {Object|null} - 包含 labels、values、defaultIndex，失败返回 null
+ */
+function parseSemesterOptionsFromHtml(selectHtml) {
+    if (!selectHtml || typeof selectHtml !== 'string') {
+        return null;
+    }
+
+    try {
+        const doc = new DOMParser().parseFromString(selectHtml, "text/html");
+        const selectElement = doc.querySelector('#xnxq1') || doc.querySelector('select[name="xnxq"]');
+        if (!selectElement) {
+            return null;
+        }
+
+        const optionElements = Array.from(selectElement.querySelectorAll('option'));
+        const validOptions = optionElements.filter(option => (option.value || '').trim() !== '');
+        if (validOptions.length === 0) {
+            return null;
+        }
+
+        const labels = validOptions.map(option => (option.textContent || option.value || '').trim());
+        const values = validOptions.map(option => (option.value || '').trim());
+
+        let defaultIndex = validOptions.findIndex(option => option.selected);
+        if (defaultIndex < 0) {
+            defaultIndex = 0;
+        }
+
+        return { labels, values, defaultIndex };
+    } catch (error) {
+        console.warn("JS: 解析学年学期下拉 HTML 失败", error);
+        return null;
+    }
+}
+
+/**
  * 提示用户选择学年学期。
+ * @param {string|null|undefined} xnxqSelectHtml - 页面中 id=xnxq1 的 select 元素 HTML
  * @returns {Promise<string|null>} - 选中的学年学期参数（如 "2025-2026-1"），或 null（取消）
  */
-async function selectAcademicYearAndSemester() {
+async function selectAcademicYearAndSemester(xnxqSelectHtml) {
     console.log("JS: 提示用户选择学年学期。");
-    const { labels, values, defaultIndex } = getSemesterOptions();
+    let options = parseSemesterOptionsFromHtml(xnxqSelectHtml);
+    if (!options) {
+        console.warn("JS: 页面学年学期选项解析失败，回退为前后三年选项。");
+        options = getSemesterOptions();
+    }
+    const { labels, values, defaultIndex } = options;
     
     const selectedIndex = await window.AndroidBridgePromise.showSingleSelection(
         "选择学年学期",
@@ -243,8 +266,146 @@ async function selectAcademicYearAndSemester() {
 }
 
 /**
+ * 获取校区列表。
+ * @returns {Promise<Array<{xqdm: string, xqmc: string}>|null>} - 校区列表，或 null（失败）
+ */
+async function fetchCampusList() {
+    console.log("JS: 正在请求校区列表...");
+
+    const url = "/admin/api/jcsj/xqsj/getXqList";
+    const requestOptions = {
+        "headers": {
+            "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest"
+        },
+        "method": "GET",
+        "credentials": "include"
+    };
+
+    try {
+        const response = await fetch(url, requestOptions);
+
+        if (!response.ok) {
+            throw new Error(`网络请求失败。状态码: ${response.status}`);
+        }
+
+        const jsonData = await response.json();
+
+        if (jsonData.ret !== 0) {
+            throw new Error(`API 返回错误: ${jsonData.msg || '未知错误'}`);
+        }
+
+        if (!Array.isArray(jsonData.data)) {
+            throw new Error("校区列表数据格式错误。");
+        }
+
+        const campusList = jsonData.data
+            .map(item => ({
+                xqdm: String(item.id || '').trim(),
+                xqmc: String(item.xqmc || item.id || '').trim()
+            }))
+            .filter(item => item.xqdm && item.xqmc);
+
+        if (campusList.length === 0) {
+            throw new Error("未获取到有效校区信息。");
+        }
+
+        console.log(`JS: 校区列表获取成功，共 ${campusList.length} 个校区。`);
+        return campusList;
+    } catch (error) {
+        AndroidBridge.showToast(`获取校区列表失败: ${error.message}`);
+        console.error('JS: fetchCampusList Error:', error);
+        return null;
+    }
+}
+
+/**
+ * 提示用户选择校区。
+ * @param {string} defaultXqdm - 默认选中的校区代码
+ * @returns {Promise<{xqdm: string, xqmc: string}|null>} - 选中的校区信息，或 null（取消/失败）
+ */
+async function selectCampus(defaultXqdm) {
+    const campusList = await fetchCampusList();
+    if (!campusList) {
+        console.warn(`JS: 获取校区列表失败，使用页面参数 xqdm=${defaultXqdm} 继续导入。`);
+        AndroidBridge.showToast("获取校区列表失败，使用默认校区继续导入。");
+        return {
+            xqdm: defaultXqdm,
+            xqmc: ""
+        };
+    }
+
+    const labels = campusList.map(item => item.xqmc);
+    const defaultIndex = Math.max(
+        campusList.findIndex(item => item.xqdm === defaultXqdm),
+        0
+    );
+
+    const selectedIndex = await window.AndroidBridgePromise.showSingleSelection(
+        "选择校区",
+        JSON.stringify(labels),
+        defaultIndex
+    );
+
+    if (selectedIndex === null || selectedIndex === -1) {
+        return null;
+    }
+
+    const selectedCampus = campusList[selectedIndex];
+    console.log(`JS: 用户选择了校区: ${selectedCampus.xqmc} (${selectedCampus.xqdm})`);
+    return selectedCampus;
+}
+
+/** 
+ * 时间格式化
+ * @returns {string|null} - 格式化后的时间字符串 "HH:MM"，或 null（格式不合法）
+ */
+function formatTime(timeStr) {
+    if (typeof timeStr !== 'string') return null;
+    const match = timeStr.match(/^(\d{1,2}):(\d{1,2})(?::\d{1,2})?$/);
+    if (!match) return null;
+    let [ , hour, minute ] = match.map(Number);
+    return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+/**
+ * 从节次时间数据生成时间段列表。
+ * @param {Array} jcsjszList - 节次时间数组，来自 getZclistByXnxq 接口
+ * @returns {Array<Object>|null} - 时间段列表，格式不合法时返回 null
+ */
+function generateTimeSlots(jcsjszList) {
+    if (!jcsjszList || !Array.isArray(jcsjszList)) {
+        console.warn("JS: 节次时间数据为空或格式错误。");
+        return [];
+    }
+
+    const timeSlots = [];
+
+    for (const item of jcsjszList) {
+        const startTime = formatTime(item.kssj);
+        const endTime = formatTime(item.jssj);
+
+        if (!startTime || !endTime) {
+            console.warn("JS: 节次时间格式不合法，跳过生成时间段列表。", item);
+            return null;
+        }
+
+        timeSlots.push({
+            number: Number(item.jc),
+            startTime,
+            endTime
+        });
+    }
+
+    timeSlots.sort((a, b) => a.number - b.number);
+
+    console.log(`JS: 生成了 ${timeSlots.length} 个时间段。`);
+    return timeSlots;
+}
+
+/**
  * 从页面中提取必要的参数。
- * @returns {Object|null} - 包含 xhid 和 xqdm 的对象，或 null（提取失败）
+ * @returns {Object|null} - 包含 xhid、xqdm 和 xnxqSelectHtml 的对象，或 null（提取失败）
  */
 async function extractPageParams() {
     console.log("JS: 尝试从页面中提取参数...");
@@ -252,9 +413,11 @@ async function extractPageParams() {
     // 方法1：从隐藏的 input 元素中获取
     let xhid = document.querySelector('#xhid')?.value;
     let xqdm = document.querySelector('#xqdm')?.value;
+    let xnxqSelectHtml = document.querySelector('#xnxq1')?.outerHTML;
     
-    // 方法2：如果页面上找不到，尝试从 URL 参数中获取
-    if (!xhid || !xqdm) {
+    // 方法2：如果页面上找不到，尝试抓取课表页并解析
+    if (!xhid || !xqdm || !xnxqSelectHtml) {
+        console.log("JS: 尝试抓取课表页并解析...");
         const path = "/admin/pkgl/xskb/queryKbForXsd";
 
         try {
@@ -263,28 +426,29 @@ async function extractPageParams() {
             const contentDom = new DOMParser().parseFromString(htmlText, "text/html");
 
             // 从转换后的 HTML 文档中获取 xhid 和 xqdm 的值
-            xhid = contentDom.querySelector("#xhid")?.value;
-            xqdm = contentDom.querySelector("#xqdm")?.value;
+            xhid = contentDom.querySelector("#xhid")?.value ||  xhid;
+            xqdm = contentDom.querySelector("#xqdm")?.value || xqdm;
+            xnxqSelectHtml = contentDom.querySelector("#xnxq1")?.outerHTML || xnxqSelectHtml;
         } catch (error) {
             console.warn("JS: 通过抓取课表页提取参数失败", error);
         }
     }
     
-    console.log(`JS: 提取到参数 - xhid: ${xhid}, xqdm: ${xqdm}`);
+    console.log(`JS: 提取到参数 - xhid: ${xhid}, xqdm: ${xqdm}, xnxqSelectHtml: ${xnxqSelectHtml ? 'yes' : 'no'}`);
     
     if (!xhid || !xqdm) {
         console.warn("JS: 无法从页面中提取必要参数。");
         return null;
     }
     
-    return { xhid, xqdm };
+    return { xhid, xqdm, xnxqSelectHtml };
 }
 
 /**
  * 获取节次时间和开学日期信息。
  * @param {string} xnxq - 学年学期参数
  * @param {string} xqdm - 校区代码
- * @returns {Promise<Object|null>} - 包含 timeSlots 和 semesterStartDate，或 null（失败）
+ * @returns {Promise<Object>} - 包含 timeSlots 和 semesterStartDate，请求失败时返回空配置继续流程
  */
 async function fetchTimeAndWeekData(xnxq, xqdm) {
     console.log(`JS: 正在请求节次时间和周次数据...`);
@@ -318,17 +482,24 @@ async function fetchTimeAndWeekData(xnxq, xqdm) {
         const timeSlots = generateTimeSlots(jsonData.data?.jcsjszList);
         const semesterStartDate = getSemesterStartDate(jsonData.data?.zclist);
 
-        if (timeSlots.length === 0) {
-            throw new Error("未能获取到有效的节次时间信息。");
+        if (!timeSlots) {
+            console.warn("JS: 未获取到节次时间");
         }
 
-        console.log(`JS: 成功获取节次时间（${timeSlots.length}个）和开学日期（${semesterStartDate}）。`);
+        if (!semesterStartDate) {
+            console.warn("JS: 未获取到开学日期");
+        }
+
+        console.log(`JS: 成功获取节次时间（${Array.isArray(timeSlots) ? timeSlots.length : 0}个）和开学日期（${semesterStartDate}）。`);
         return { timeSlots, semesterStartDate };
 
     } catch (error) {
-        AndroidBridge.showToast(`获取配置信息失败: ${error.message}`);
+        AndroidBridge.showToast(`获取配置信息失败，将继续导入课程: ${error.message}`);
         console.error('JS: fetchTimeAndWeekData Error:', error);
-        return null;
+        return {
+            timeSlots: null,
+            semesterStartDate: null
+        };
     }
 }
 
@@ -499,41 +670,54 @@ async function runImportFlow() {
         return;
     }
     
-    const { xhid, xqdm } = params;
+    const { xhid, xqdm: pageXqdm, xnxqSelectHtml } = params;
     
     // 4. 让用户选择学年学期
-    const xnxq = await selectAcademicYearAndSemester();
+    const xnxq = await selectAcademicYearAndSemester(xnxqSelectHtml);
     if (xnxq === null) {
         AndroidBridge.showToast("导入已取消，未选择学年学期。");
         return;
     }
 
-    // 5. 获取节次时间和开学日期
-    const timeData = await fetchTimeAndWeekData(xnxq, xqdm);
-    if (!timeData) {
+    // 5. 让用户选择校区（默认使用页面参数中的 xqdm，若校区接口失败则自动回退使用页面 xqdm）
+    const selectedCampus = await selectCampus(pageXqdm);
+    if (!selectedCampus) {
+        AndroidBridge.showToast("导入已取消，未选择校区。");
         return;
     }
+    const { xqdm } = selectedCampus;
+
+    // 6. 获取节次时间和开学日期
+    const timeData = await fetchTimeAndWeekData(xnxq, xqdm);
     const { timeSlots, semesterStartDate } = timeData;
 
-    // 6. 获取课程数据
+    // 7. 获取课程数据
     const courses = await fetchCourseData(xnxq, xhid, xqdm);
     if (!courses) {
         return;
     }
 
-    // 7. 保存课程数据
+    // 8. 保存课程数据
     const saveResult = await saveCourses(courses);
     if (!saveResult) {
         return;
     }
 
-    // 8. 导入预设时间段
-    await importPresetTimeSlots(timeSlots);
+    // 9. 导入预设时间段
+    if (Array.isArray(timeSlots) && timeSlots.length > 0) {
+        await importPresetTimeSlots(timeSlots);
+    } else {
+        console.log("JS: 未生成有效时间段，跳过预设时间段导入。");
+    }
 
-    // 9. 保存课表配置（开学日期）
-    await saveCourseConfig(semesterStartDate);
+    // 10. 保存课表配置（开学日期）
+    if (semesterStartDate) {
+        await saveCourseConfig(semesterStartDate);
+    } else {
+        console.log("JS: 未获取到开学日期，跳过课表配置保存。");
+    }
 
-    // 10. 完成
+    // 11. 完成
     AndroidBridge.showToast(`导入成功！共导入 ${courses.length} 门课程。`);
     AndroidBridge.notifyTaskCompletion();
     console.log("JS: 超星教务系统课表导入流程完成。");
