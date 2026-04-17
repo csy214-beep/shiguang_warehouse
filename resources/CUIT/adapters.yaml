@@ -1,0 +1,17 @@
+# resources/CUIT/adapters.yaml
+adapters:
+  - adapter_id: "CUIT_01"
+    adapter_name: "新版成都信息工程大学教务系统（推荐）"
+    category: "BACHELOR_AND_ASSOCIATE"
+    asset_js_path: "cuit_bk_new.js"
+    import_url: "https://ywtb.cuit.edu.cn/"
+    maintainer: "csy214-beep"
+    description: "先进行登录，VPN:【一键连WebVPN】，必须使用【电脑模式】，导航【应用系统】->【本科实践教学平台】-> 【我的课程】-> 【我的课表】"
+
+  - adapter_id: "CUIT_02"
+    adapter_name: "旧版成都信息工程大学教务系统（不推荐）"
+    category: "BACHELOR_AND_ASSOCIATE"
+    asset_js_path: "cuit_bk_old.js"
+    import_url: "https://jwc.cuit.edu.cn/"
+    maintainer: "csy214-beep"
+    description: "先进行登录，导航到课表界面才能导入"
