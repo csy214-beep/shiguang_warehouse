@@ -1,412 +1,317 @@
-// 文件: cuit.js
-// 成都信息工程大学 (CUIT) 教务系统课程表导入脚本
-// 基于树维教务 HTML 表格解析，适用于 http://jwgl.cuit.edu.cn/eams/courseTableForStd!courseTable.action
-// https://jwc.cuit.edu.cn/
+/**
+ * 成都信息工程大学（树维教务）课表导入适配脚本 Fetch API
+ */
+(function() {
+    const BASE = "http://jwgl.cuit.edu.cn";
 
-// ==================== 页面检测 ====================
-function isOnCourseTablePage() {
-  const url = window.location.href;
-  return /\/eams\/courseTableForStd!courseTable\.action/i.test(url);
-}
-
-// ==================== 工具函数：周次解析 ====================
-function parseWeeks(weeksStr) {
-  if (!weeksStr) return [];
-  const ranges = weeksStr.split(",");
-  const weeks = [];
-  for (const range of ranges) {
-    const match = range.match(/(\d+)-(\d+)/);
-    if (match) {
-      const start = parseInt(match[1], 10);
-      const end = parseInt(match[2], 10);
-      for (let i = start; i <= end; i++) {
-        weeks.push(i);
-      }
-    } else {
-      const single = parseInt(range, 10);
-      if (!isNaN(single)) weeks.push(single);
-    }
-  }
-  return weeks;
-}
-
-// ==================== 核心解析：从 HTML 表格提取课程 ====================
-function parseCellContent(td, day, startSection, endSection) {
-  const courses = [];
-
-  let title = td.getAttribute("title") || "";
-  if (!title) {
-    const text = td.textContent.replace(/\s+/g, " ").trim();
-    if (!text) return courses;
-    courses.push({
-      name: text.split(" ")[0],
-      teacher: "",
-      position: "",
-      day: day,
-      startSection: startSection,
-      endSection: endSection,
-      weeks: [],
-      isCustomTime: false,
-    });
-    return courses;
-  }
-
-  const courseBlocks = title.split(";;").filter((block) => block.trim() !== "");
-
-  for (const block of courseBlocks) {
-    const parts = block.split(";").map((s) => s.trim());
-    let courseName = "";
-    let teacher = "";
-    let weeksStr = "";
-    let position = "";
-
-    for (const part of parts) {
-      if (part.startsWith("教师：")) {
-        teacher = part.replace("教师：", "").trim();
-      } else if (part.startsWith("周次：")) {
-        weeksStr = part.replace("周次：", "").replace("周", "").trim();
-      } else if (part.startsWith("教室：")) {
-        position = part.replace("教室：", "").trim();
-      } else if (part && !part.includes("：")) {
-        courseName = part;
-      }
-    }
-
-    if (!courseName && parts.length > 0) {
-      courseName = parts[0];
-    }
-
-    const weeks = parseWeeks(weeksStr);
-
-    courses.push({
-      name: courseName || "未知课程",
-      teacher: teacher,
-      position: position,
-      day: day,
-      startSection: startSection,
-      endSection: endSection,
-      weeks: weeks,
-      isCustomTime: false,
-    });
-  }
-
-  return courses;
-}
-
-async function parseAndImportCoursesFromPage() {
-  AndroidBridge.showToast("正在解析课表表格...");
-
-  const table = document.querySelector("table#manualArrangeCourseTable");
-  if (!table) {
-    await window.AndroidBridgePromise.showAlert(
-      "解析失败",
-      "未找到课表表格 (id='manualArrangeCourseTable')，请确保已进入课表页面。",
-      "确定",
-    );
-    return false;
-  }
-
-  const theadRow = table.querySelector("thead tr");
-  if (!theadRow) {
-    await window.AndroidBridgePromise.showAlert(
-      "解析失败",
-      "表格结构异常，无表头行。",
-      "确定",
-    );
-    return false;
-  }
-
-  const dayHeaders = Array.from(theadRow.querySelectorAll("th")).slice(1);
-  const dayCount = dayHeaders.length;
-  const columnToDay = {};
-  dayHeaders.forEach((th, idx) => {
-    const text = th.textContent.trim();
-    const dayMap = {
-      星期一: 1,
-      星期二: 2,
-      星期三: 3,
-      星期四: 4,
-      星期五: 5,
-      星期六: 6,
-      星期日: 7,
-    };
-    columnToDay[idx] = dayMap[text] || idx + 1;
-  });
-
-  const tbody = table.querySelector("tbody");
-  if (!tbody) {
-    await window.AndroidBridgePromise.showAlert(
-      "解析失败",
-      "表格缺少 tbody。",
-      "确定",
-    );
-    return false;
-  }
-  const rows = Array.from(tbody.querySelectorAll("tr"));
-
-  const rowspanTracker = new Array(dayCount).fill(null);
-  const courses = [];
-  const courseSet = new Set();
-
-  for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
-    const tr = rows[rowIdx];
-    const startSection = rowIdx + 1;
-    const cells = Array.from(tr.children);
-    const dataCells = cells.slice(1);
-
-    let colIdx = 0;
-    for (let cellIdx = 0; cellIdx < dataCells.length; cellIdx++) {
-      const td = dataCells[cellIdx];
-
-      while (
-        colIdx < dayCount &&
-        rowspanTracker[colIdx] &&
-        rowspanTracker[colIdx].remain > 0
-      ) {
-        rowspanTracker[colIdx].remain--;
-        if (rowspanTracker[colIdx].remain === 0) {
-          rowspanTracker[colIdx] = null;
+    // ==================== 工具函数 ====================
+    function unquoteJsLiteral(token) {
+        const text = String(token || "").trim();
+        if (!text) return "";
+        if (text === "null" || text === "undefined") return "";
+        if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+            return text.slice(1, -1);
         }
-        colIdx++;
-      }
+        return text;
+    }
 
-      if (colIdx >= dayCount) break;
+    function splitJsArgs(argsText) {
+        const args = [];
+        let curr = "";
+        let inQuote = "";
+        let escaped = false;
+        for (let i = 0; i < argsText.length; i++) {
+            const ch = argsText[i];
+            if (escaped) { curr += ch; escaped = false; continue; }
+            if (ch === "\\") { curr += ch; escaped = true; continue; }
+            if (inQuote) { curr += ch; if (ch === inQuote) inQuote = ""; continue; }
+            if (ch === '"' || ch === "'") { curr += ch; inQuote = ch; continue; }
+            if (ch === ",") { args.push(curr.trim()); curr = ""; continue; }
+            curr += ch;
+        }
+        if (curr.trim() || argsText.endsWith(",")) args.push(curr.trim());
+        return args;
+    }
 
-      const rowspan = parseInt(td.getAttribute("rowspan") || "1", 10);
-      if (rowspan > 1) {
-        rowspanTracker[colIdx] = {
-          remain: rowspan - 1,
-          cellData: null,
+    function parseValidWeeksBitmap(bitmap) {
+        if (!bitmap || typeof bitmap !== "string") return [];
+        const weeks = [];
+        for (let i = 0; i < bitmap.length; i++) {
+            if (bitmap[i] === "1") weeks.push(i + 1);
+        }
+        return weeks;
+    }
+
+    function cleanCourseName(name) {
+        return String(name || "").replace(/\(\d{10}\.\d{2}\)\s*$/, "").trim();
+    }
+
+    // ==================== 核心解析 ====================
+    function parseCoursesFromHtml(htmlText) {
+        const text = String(htmlText || "");
+        if (!text) return [];
+
+        const unitCountMatch = text.match(/\bvar\s+unitCount\s*=\s*(\d+)\s*;/);
+        const unitCount = unitCountMatch ? parseInt(unitCountMatch[1], 10) : 12;
+
+        // 第一步：提取所有 actTeachers 定义块（用于解析教师姓名）
+        const teacherBlocks = [];
+        const teacherBlockRe = /var\s+teachers\s*=\s*\[(.*?)\];\s*var\s+actTeachers\s*=\s*\[(.*?)\];/gs;
+        let tbMatch;
+        while ((tbMatch = teacherBlockRe.exec(text)) !== null) {
+            const teachersArrStr = tbMatch[1];
+            const actTeachersArrStr = tbMatch[2];
+            const nameRe = /name\s*:\s*(?:"([^"]*)"|'([^']*)')/g;
+            const names = [];
+            let nm;
+            const searchStr = actTeachersArrStr || teachersArrStr;
+            while ((nm = nameRe.exec(searchStr)) !== null) {
+                const name = (nm[1] || nm[2] || "").trim();
+                if (name) names.push(name);
+            }
+            if (names.length > 0) {
+                teacherBlocks.push({
+                    startIndex: tbMatch.index,
+                    endIndex: tbMatch.index + tbMatch[0].length,
+                    teacherNames: names.join(',')
+                });
+            }
+        }
+
+        // 第二步：解析 TaskActivity 及 index 赋值，收集每门课的所有节次
+        // 使用 Map 键为 "name|teacher|position|day|weeks" 值，存储节次数组
+        const courseSectionsMap = new Map();
+        const blockRe = /activity\s*=\s*new\s+TaskActivity\(([^]*?)\)\s*;([\s\S]*?)(?=activity\s*=\s*new\s+TaskActivity|$)/g;
+        let match;
+
+        while ((match = blockRe.exec(text)) !== null) {
+            const argsText = match[1];
+            const afterBlock = match[2];
+            const blockStart = match.index;
+
+            const args = splitJsArgs(argsText);
+            if (args.length < 7) continue;
+
+            let teacherExpr = args[1];
+            const courseFull = unquoteJsLiteral(args[2]);
+            let courseNameRaw = unquoteJsLiteral(args[3]);
+            const classroom = unquoteJsLiteral(args[5]);
+            const weekBitmap = unquoteJsLiteral(args[6]);
+
+            let courseName = courseNameRaw || courseFull.replace(/\(.*\)/, "");
+            courseName = cleanCourseName(courseName);
+            if (!courseName) continue;
+
+            const weeks = parseValidWeeksBitmap(weekBitmap);
+            if (weeks.length === 0) continue;
+
+            // 解析教师姓名
+            let teacherNames = "";
+            const teacherExprStr = String(teacherExpr).trim();
+            if (teacherExprStr.includes('join') || teacherExprStr.includes('actTeacherName')) {
+                for (let i = teacherBlocks.length - 1; i >= 0; i--) {
+                    const tb = teacherBlocks[i];
+                    if (tb.startIndex < blockStart) {
+                        teacherNames = tb.teacherNames;
+                        break;
+                    }
+                }
+            } else {
+                teacherNames = unquoteJsLiteral(teacherExpr);
+            }
+
+            // 提取该 activity 被赋值的所有 index，得到 day 和 section
+            const indexRe = /index\s*=\s*(\d+)\s*\*\s*unitCount\s*\+\s*(\d+)\s*;/g;
+            let idxMatch;
+            while ((idxMatch = indexRe.exec(afterBlock)) !== null) {
+                const dayIdx = parseInt(idxMatch[1], 10);
+                const sectionIdx = parseInt(idxMatch[2], 10);
+                const day = dayIdx + 1;
+                const section = sectionIdx + 1;
+
+                // 唯一键（不含节次）
+                const baseKey = `${courseName}|${teacherNames}|${classroom}|${day}|${weeks.join(',')}`;
+
+                if (!courseSectionsMap.has(baseKey)) {
+                    courseSectionsMap.set(baseKey, {
+                        name: courseName,
+                        teacher: teacherNames,
+                        position: classroom,
+                        day: day,
+                        weeks: weeks,
+                        sections: new Set()
+                    });
+                }
+                courseSectionsMap.get(baseKey).sections.add(section);
+            }
+        }
+
+        // 第三步：将节次 Set 转换为连续区间，生成最终课程列表
+        const courses = [];
+        for (const [_, data] of courseSectionsMap) {
+            const sections = Array.from(data.sections).sort((a, b) => a - b);
+            if (sections.length === 0) continue;
+
+            // 分组连续节次
+            let start = sections[0];
+            let end = sections[0];
+            for (let i = 1; i < sections.length; i++) {
+                if (sections[i] === end + 1) {
+                    end = sections[i];
+                } else {
+                    courses.push({
+                        name: data.name,
+                        teacher: data.teacher,
+                        position: data.position,
+                        day: data.day,
+                        startSection: start,
+                        endSection: end,
+                        weeks: data.weeks,
+                        isCustomTime: false
+                    });
+                    start = sections[i];
+                    end = sections[i];
+                }
+            }
+            // 最后一组
+            courses.push({
+                name: data.name,
+                teacher: data.teacher,
+                position: data.position,
+                day: data.day,
+                startSection: start,
+                endSection: end,
+                weeks: data.weeks,
+                isCustomTime: false
+            });
+        }
+
+        return courses;
+    }
+
+    // ==================== 学期与入口参数解析（同前）====================
+    async function requestText(url, options) {
+        const res = await fetch(url, { credentials: "include", ...options });
+        if (!res.ok) throw new Error(`请求失败: ${res.status}`);
+        return await res.text();
+    }
+
+    function parseEntryParams(entryHtml) {
+        const idsMatch = entryHtml.match(/bg\.form\.addInput\(form,"ids","(\d+)"\)/);
+        const tagIdMatch = entryHtml.match(/id="(semesterBar\d+Semester)"/);
+        return {
+            studentId: idsMatch ? idsMatch[1] : "",
+            tagId: tagIdMatch ? tagIdMatch[1] : ""
         };
-      }
+    }
 
-      const title = td.getAttribute("title") || "";
-      const bgColor = td.style.backgroundColor;
-      if (!title && bgColor === "rgb(255, 255, 255)") {
-        colIdx++;
-        continue;
-      }
-
-      const cellCourses = parseCellContent(
-        td,
-        columnToDay[colIdx],
-        startSection,
-        startSection + rowspan - 1,
-      );
-
-      if (rowspan > 1) {
-        rowspanTracker[colIdx].cellData = cellCourses;
-      }
-
-      for (const course of cellCourses) {
-        const key = `${course.name}|${course.teacher}|${course.position}|${course.day}|${course.startSection}|${course.weeks.join(",")}`;
-        if (!courseSet.has(key)) {
-          courseSet.add(key);
-          courses.push(course);
+    function parseSemesterResponse(rawText) {
+        let data;
+        try {
+            data = Function(`return (${String(rawText).trim()});`)();
+        } catch {
+            throw new Error("学期数据解析失败");
         }
-      }
-
-      colIdx++;
+        const semesters = [];
+        if (!data || !data.semesters) return semesters;
+        Object.keys(data.semesters).forEach(k => {
+            const arr = data.semesters[k];
+            if (!Array.isArray(arr)) return;
+            arr.forEach(s => {
+                if (!s || !s.id) return;
+                semesters.push({
+                    id: String(s.id),
+                    name: `${s.schoolYear || ""} ${s.name || ""}学期`.trim()
+                });
+            });
+        });
+        return semesters;
     }
 
-    for (; colIdx < dayCount; colIdx++) {
-      if (rowspanTracker[colIdx] && rowspanTracker[colIdx].remain > 0) {
-        rowspanTracker[colIdx].remain--;
-        if (rowspanTracker[colIdx].remain === 0) {
-          rowspanTracker[colIdx] = null;
+    function getPresetTimeSlots() {
+        return [
+            { number: 1, startTime: "08:20", endTime: "09:05" },
+            { number: 2, startTime: "09:15", endTime: "10:00" },
+            { number: 3, startTime: "10:20", endTime: "11:05" },
+            { number: 4, startTime: "11:15", endTime: "12:00" },
+            { number: 5, startTime: "14:00", endTime: "14:45" },
+            { number: 6, startTime: "14:55", endTime: "15:40" },
+            { number: 7, startTime: "15:50", endTime: "16:35" },
+            { number: 8, startTime: "16:45", endTime: "17:30" },
+            { number: 9, startTime: "17:40", endTime: "18:25" },
+            { number: 10, startTime: "19:30", endTime: "20:15" },
+            { number: 11, startTime: "20:25", endTime: "21:10" },
+            { number: 12, startTime: "21:20", endTime: "22:05" }
+        ];
+    }
+
+    // ==================== 主导入流程 ====================
+    async function runImportFlow() {
+        if (!window.AndroidBridgePromise) throw new Error("AndroidBridgePromise 不可用");
+        AndroidBridge.showToast("正在探测教务参数...");
+
+        const entryHtml = await requestText(`${BASE}/eams/courseTableForStd.action?&sf_request_type=ajax`, {
+            method: "GET",
+            headers: { "x-requested-with": "XMLHttpRequest" }
+        });
+        const params = parseEntryParams(entryHtml);
+        if (!params.studentId || !params.tagId) {
+            await window.AndroidBridgePromise.showAlert("参数探测失败", "未能识别学生ID或学期组件", "确定");
+            return;
         }
-      }
-    }
-  }
 
-  if (courses.length === 0) {
-    await window.AndroidBridgePromise.showAlert(
-      "提示",
-      "未提取到任何课程数据，请确认课表页面已完全加载。",
-      "确定",
-    );
-    return false;
-  }
+        const semesterRaw = await requestText(`${BASE}/eams/dataQuery.action?sf_request_type=ajax`, {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8" },
+            body: `tagId=${encodeURIComponent(params.tagId)}&dataType=semesterCalendar`
+        });
+        const allSemesters = parseSemesterResponse(semesterRaw);
+        if (allSemesters.length === 0) throw new Error("学期列表为空");
+        const recentSemesters = allSemesters.slice(-8);
+        const selectIndex = await window.AndroidBridgePromise.showSingleSelection(
+            "请选择导入学期",
+            JSON.stringify(recentSemesters.map(s => s.name || s.id)),
+            recentSemesters.length - 1
+        );
+        if (selectIndex === null) {
+            AndroidBridge.showToast("已取消导入");
+            return;
+        }
+        const selectedSemester = recentSemesters[selectIndex];
+        AndroidBridge.showToast("正在获取课表数据...");
 
-  try {
-    await window.AndroidBridgePromise.saveImportedCourses(
-      JSON.stringify(courses),
-    );
-    AndroidBridge.showToast(`成功导入 ${courses.length} 门课程！`);
-    return true;
-  } catch (error) {
-    AndroidBridge.showToast(`保存失败: ${error.message}`);
-    return false;
-  }
-}
+        const courseHtml = await requestText(`${BASE}/eams/courseTableForStd!courseTable.action?sf_request_type=ajax`, {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8" },
+            body: [
+                "ignoreHead=1",
+                "setting.kind=std",
+                "startWeek=",
+                `semester.id=${encodeURIComponent(selectedSemester.id)}`,
+                `ids=${encodeURIComponent(params.studentId)}`
+            ].join("&")
+        });
 
-// ==================== 时间段配置（CUIT 实际作息时间） ====================
-async function importCUITTimeSlots() {
-  console.log("正在准备 CUIT 时间段数据...");
-  const timeSlots = [
-    { number: 1, startTime: "08:20", endTime: "09:05" },
-    { number: 2, startTime: "09:15", endTime: "10:00" },
-    { number: 3, startTime: "10:20", endTime: "11:05" },
-    { number: 4, startTime: "11:15", endTime: "12:00" },
-    { number: 5, startTime: "14:00", endTime: "14:45" },
-    { number: 6, startTime: "14:55", endTime: "15:40" },
-    { number: 7, startTime: "15:50", endTime: "16:35" },
-    { number: 8, startTime: "16:45", endTime: "17:30" },
-    { number: 9, startTime: "17:40", endTime: "18:25" },
-    { number: 10, startTime: "19:30", endTime: "20:15" },
-    { number: 11, startTime: "20:25", endTime: "21:10" },
-    { number: 12, startTime: "21:20", endTime: "22:05" },
-  ];
+        const courses = parseCoursesFromHtml(courseHtml);
+        if (courses.length === 0) {
+            await window.AndroidBridgePromise.showAlert("解析失败", "未提取到课程数据", "确定");
+            return;
+        }
 
-  try {
-    const result = await window.AndroidBridgePromise.savePresetTimeSlots(
-      JSON.stringify(timeSlots),
-    );
-    if (result === true) {
-      console.log("CUIT 时间段导入成功！");
-      AndroidBridge.showToast("作息时间配置成功！");
-      return true;
-    } else {
-      AndroidBridge.showToast("时间段配置失败");
-      return false;
-    }
-  } catch (error) {
-    console.error("导入时间段出错:", error);
-    AndroidBridge.showToast("时间段配置出错: " + error.message);
-    return false;
-  }
-}
+        await window.AndroidBridgePromise.saveImportedCourses(JSON.stringify(courses));
+        AndroidBridge.showToast(`成功导入 ${courses.length} 门课程`);
 
-// ==================== 课表配置（可选） ====================
-async function importCourseConfig() {
-  // 可根据实际情况调整，例如从页面抓取学期开始日期
-  const config = {
-    semesterStartDate: "2026-03-02", // 请根据实际开学日期修改
-    semesterTotalWeeks: 20,
-    defaultClassDuration: 45,
-    defaultBreakDuration: 10,
-    firstDayOfWeek: 1,
-  };
+        await window.AndroidBridgePromise.savePresetTimeSlots(JSON.stringify(getPresetTimeSlots()));
 
-  try {
-    await window.AndroidBridgePromise.saveCourseConfig(JSON.stringify(config));
-    console.log("课表配置导入成功");
-    return true;
-  } catch (error) {
-    console.warn("课表配置导入失败（可忽略）:", error);
-    return false;
-  }
-}
-
-// ==================== 主导入流程 ====================
-async function importCourseSchedule() {
-  try {
-    console.log("开始导入 CUIT 课程表...");
-    AndroidBridge.showToast("正在解析课表数据...");
-
-    // 1. 解析并导入课程
-    const coursesSuccess = await parseAndImportCoursesFromPage();
-    if (!coursesSuccess) {
-      return false;
+        AndroidBridge.notifyTaskCompletion();
     }
 
-    // 2. 导入时间段
-    await importCUITTimeSlots();
-
-    // 3. 导入配置（可选）
-    await importCourseConfig();
-
-    return true;
-  } catch (error) {
-    console.error("导入过程出错:", error);
-    AndroidBridge.showToast("导入失败: " + error.message);
-    return false;
-  }
-}
-
-// ==================== 以下为演示函数（保留用于测试） ====================
-async function demoAlert() {
-  try {
-    const confirmed = await window.AndroidBridgePromise.showAlert(
-      "重要通知",
-      "这是一个弹窗示例。",
-      "好的",
-    );
-    AndroidBridge.showToast(confirmed ? "用户点击了确认" : "用户取消了");
-    return confirmed;
-  } catch (error) {
-    AndroidBridge.showToast("Alert 出错: " + error.message);
-    return false;
-  }
-}
-
-function validateName(name) {
-  if (!name || name.trim().length === 0) return "输入不能为空！";
-  if (name.length < 2) return "姓名至少需要2个字符！";
-  return false;
-}
-
-async function demoPrompt() {
-  try {
-    const name = await window.AndroidBridgePromise.showPrompt(
-      "输入你的姓名",
-      "请输入至少2个字符",
-      "测试用户",
-      "validateName",
-    );
-    if (name !== null) {
-      AndroidBridge.showToast("欢迎你，" + name + "！");
-      return true;
-    }
-    return false;
-  } catch (error) {
-    AndroidBridge.showToast("Prompt 出错: " + error.message);
-    return false;
-  }
-}
-
-async function demoSingleSelection() {
-  const fruits = ["苹果", "香蕉", "橙子", "葡萄"];
-  try {
-    const idx = await window.AndroidBridgePromise.showSingleSelection(
-      "选择喜欢的水果",
-      JSON.stringify(fruits),
-      0,
-    );
-    if (idx !== null) {
-      AndroidBridge.showToast("你选择了 " + fruits[idx]);
-      return true;
-    }
-    return false;
-  } catch (error) {
-    AndroidBridge.showToast("选择出错: " + error.message);
-    return false;
-  }
-}
-
-async function runDemoMode() {
-  AndroidBridge.showToast("演示模式启动...");
-  await demoAlert();
-  await demoPrompt();
-  await demoSingleSelection();
-  AndroidBridge.notifyTaskCompletion();
-}
-
-// ==================== 入口逻辑 ====================
-AndroidBridge.showToast("CUIT 课表适配脚本已加载");
-
-if (isOnCourseTablePage()) {
-  console.log("检测到 CUIT 课表页面，开始导入流程");
-  setTimeout(async () => {
-    const success = await importCourseSchedule();
-    if (success) {
-      AndroidBridge.notifyTaskCompletion();
-    }
-  }, 1000);
-} else {
-  console.log("当前不在课表页面，可运行演示模式");
-  AndroidBridge.showToast("请进入课表页面后重试，或运行演示模式");
-
-  // 如需测试弹窗功能，可将下行取消注释
-  // runDemoMode();
-}
+    (async function bootstrap() {
+        try {
+            await runImportFlow();
+        } catch (error) {
+            console.error("导入流程失败:", error);
+            AndroidBridge.showToast("导入失败: " + error.message);
+        }
+    })();
+})();
